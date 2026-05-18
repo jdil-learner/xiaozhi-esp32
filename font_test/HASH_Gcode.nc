@@ -1,0 +1,22 @@
+; Laser Engraving G-code
+; Character: '#'  Size: 5.0mm  Power: 800
+G21 ; mm
+G90 ; absolute
+G0 X0.238 Y-3.810
+M3 S800
+G1 X-1.429 Y3.810 F800
+M5
+G0 X1.667 Y-3.810
+M3 S800
+G1 X0.000 Y3.810 F800
+M5
+G0 X-1.429 Y-0.714
+M3 S800
+G1 X1.905 Y-0.714 F800
+M5
+G0 X-1.667 Y0.714
+M3 S800
+G1 X1.667 Y0.714 F800
+M5
+G0 X0 Y0
+; End
