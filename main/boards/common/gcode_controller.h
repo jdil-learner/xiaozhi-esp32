@@ -52,20 +52,19 @@ private:
         return nullptr;
     }
 
-    // ─── ASCII 单字 (Hershey 原始逻辑) ───
+    // ─── ASCII 单字 (Hershey: Y+ 向下 → 翻转, 基线由调用者传入) ───
     static void GenAsciiChar(std::string& gcode, const int8_t* data,
-                             float& x_cursor, float y_base,
+                             float& x_cursor, float y_off,
                              float scale, int power, int feed_rate) {
-        // Hershey 坐标 Y+ 向下, 扫描 min_x 和 max_y
-        int8_t min_x = 0, max_y = -128;
+        // Hershey 坐标 Y+ 向下, 扫描 min_x
+        int8_t min_x = 0;
         {
             const int8_t* scan = data;
             while (*scan != FONT_STROKE_END) {
                 int8_t n = *scan++;
                 for (int i = 0; i < n; i++) {
-                    int8_t sx = scan[i * 2], sy = scan[i * 2 + 1];
+                    int8_t sx = scan[i * 2];
                     if (sx < min_x) min_x = sx;
-                    if (sy > max_y) max_y = sy;
                 }
                 scan += n * 2;
             }
@@ -73,7 +72,6 @@ private:
 
         char buf[128];
         float x_off = x_cursor - min_x * scale;
-        float y_off = y_base + max_y * scale;  // 翻转后 max_y 对应底部
 
         while (*data != FONT_STROKE_END) {
             int8_t n = *data++;
@@ -154,8 +152,10 @@ private:
         float ascii_scale = size_mm / ASCII_FONT_H;
         float hanzi_scale = size_mm / FONT_GRID_SIZE;
 
-        // 预估总宽度
+        // 预估总宽度 + ASCII 高度范围
         float total_width = 0.0f;
+        int8_t ascii_max_y = -128, ascii_min_y = 127;
+        bool has_ascii = false;
         {
             const char* p = text.c_str();
             const char* end = p + text.size();
@@ -165,14 +165,29 @@ private:
                 const int8_t* d = LookupChar(cp, w);
                 float s = (cp < 128) ? ascii_scale : hanzi_scale;
                 total_width += (d && w > 0) ? w * s : 8.0f * s;
+                if (cp < 128 && d) {
+                    has_ascii = true;
+                    const int8_t* scan = d;
+                    while (*scan != FONT_STROKE_END) {
+                        int8_t n = *scan++;
+                        for (int i = 0; i < n; i++) {
+                            int8_t sy = scan[i * 2 + 1];
+                            if (sy > ascii_max_y) ascii_max_y = sy;
+                            if (sy < ascii_min_y) ascii_min_y = sy;
+                        }
+                        scan += n * 2;
+                    }
+                }
             }
         }
-        float total_height = size_mm;
+        float ascii_y_off = y_start + ascii_max_y * ascii_scale;
+        float ascii_height = has_ascii ? (ascii_max_y - ascii_min_y) * ascii_scale : 0;
+        float total_height = (ascii_height > size_mm) ? ascii_height : size_mm;
 
         if (x_start + total_width > ENGRAVING_AREA_WIDTH ||
             y_start + total_height > ENGRAVING_AREA_HEIGHT) {
             int len2 = snprintf(buf, sizeof(buf),
-                "{\"error\":\"超出雕刻范围(42x42mm): 文字宽%.1fmm,高%.1fmm,起点(%.0f,%.0f)\"}",
+                "雕刻超42x42mm范围。宽%.0f高%.0f起点(%.0f,%.0f)。请缩短文字或减小字号。",
                 total_width, total_height, x_start, y_start);
             return std::string(buf, len2);
         }
@@ -194,7 +209,7 @@ private:
             }
 
             if (cp < 128) {
-                GenAsciiChar(gcode, d, x_cursor, y_start, ascii_scale, power, feed_rate);
+                GenAsciiChar(gcode, d, x_cursor, ascii_y_off, ascii_scale, power, feed_rate);
                 x_cursor += cw * ascii_scale;
             } else {
                 GenHanziChar(gcode, d, x_cursor, y_start, hanzi_scale, power, feed_rate);
@@ -233,6 +248,10 @@ public:
             "  \"数字XXX\" → text=\"XXX\" (如\"雕刻数字123\"→text=\"123\")\n"
             "  \"符号XXX\" → text=对应符号 (如\"雕刻符号at\"→text=\"@\")\n"
             "  \"雕刻一个5mm的汉字我爱你\" → size=5, text=\"我爱你\"\n"
+            "用户指定雕刻位置时, 提取 x/y 坐标:\n"
+            "  \"雕刻xy坐标分别为10mm和10mm的你好\" → x=10, y=10, text=\"你好\"\n"
+            "  \"在x=10,y=5位置雕刻汉字中国\" → x=10, y=5, text=\"中国\"\n"
+            "  \"雕刻x坐标5,y坐标10的汉字你是\" → x=5, y=10, text=\"你是\"\n"
             "符号口述→实际字符: \"at\"\"艾特\"→@ \"美元\"→$ \"井号\"→# \"百分号\"→% \"和\"\"and\"→&\n"
             "  \"星号\"→* \"加号\"→+ \"减号\"\"横线\"→- \"点\"\"句号\"→. \"斜杠\"→/ \"冒号\"→:\n"
             "  \"问号\"→? \"感叹号\"→! \"括号\"→() \"小于\"→< \"大于\"→> \"等于\"→=\n"
@@ -265,7 +284,7 @@ public:
                     throw std::runtime_error("起始 Y 坐标超出雕刻范围(0~42mm)");
 
                 std::string gcode = GenerateGcode(text, size_mm, x_start, y_start, power, feed_rate);
-                if (!gcode.empty() && gcode[0] == '{')
+                if (!gcode.empty() && gcode.compare(0, 6, "雕刻") == 0)
                     throw std::runtime_error(gcode);
 
                 int sent = uart_write_bytes(UART_PORT, gcode.c_str(), gcode.size());
