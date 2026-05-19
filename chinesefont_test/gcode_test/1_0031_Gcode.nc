@@ -1,0 +1,9 @@
+; 1  KanjiVG/Hanzi  10.0mm
+G21 ; mm
+G90 ; absolute
+G0 X-0.315 Y-0.630
+M3 S800
+G1 X0.079 Y-0.945 F800
+G1 X0.079 Y0.709 F800
+M5
+G0 X0 Y0
