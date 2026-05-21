@@ -258,14 +258,14 @@ public:
             "  \"引号\"→\" \"逗号\"→, \"分号\"→; \"下划线\"→_ \"竖线\"→|\n"
             "  \"波浪号\"→~ \"方括号\"→[] \"花括号\"→{} \"反斜杠\"→\\\n"
             "参数:\n"
-            "  `text` 要雕刻的文字   `size` 字高mm(1-42)默认5   `power` 激光功率0-1000默认800\n"
-            "  `feed_rate` 速度mm/min默认800   `x` `y` 起始位置mm默认(0,0)\n"
+            "  `text` 要雕刻的文字   `size` 字高mm(1-42)默认10   `power` 激光功率0-1000默认1000\n"
+            "  `feed_rate` 速度mm/min默认400   `x` `y` 起始位置mm默认(0,0)\n"
             "雕刻范围 42x42mm, 超出则返回错误。",
             PropertyList({
                 Property("text", kPropertyTypeString),
-                Property("size", kPropertyTypeInteger, 5, 1, 42),
-                Property("power", kPropertyTypeInteger, 800, 0, 1000),
-                Property("feed_rate", kPropertyTypeInteger, 800, 100, 5000),
+                Property("size", kPropertyTypeInteger, 10, 1, 42),
+                Property("power", kPropertyTypeInteger, 1000, 0, 1000),
+                Property("feed_rate", kPropertyTypeInteger, 400, 100, 5000),
                 Property("x", kPropertyTypeInteger, 0, 0, 40),
                 Property("y", kPropertyTypeInteger, 0, 0, 40),
             }),
