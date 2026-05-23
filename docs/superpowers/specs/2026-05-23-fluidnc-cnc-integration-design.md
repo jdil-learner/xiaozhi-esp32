@@ -56,11 +56,18 @@ Stepper::pulse_func() [ISR]   → GPIO step/dir + PWM
 | `stepper.h` | 段生成器 + Bresenham ISR + AMASS |
 | `stepping_engine.h` | GPTimer GPIO 脉冲硬件层 |
 
-### 集成方式
+### 坐标系
+
+- **开机原点**：上电时当前位置即为绝对坐标 (0, 0)。无需物理限位开关或归零动作，软复位即可
+- **雕刻后回原点**：每次雕刻作业完成后，自动执行 `G0 X0 Y0` 返回原点
+- 当前 `GenerateGcode()` 已在末尾附加 `G0 X0 Y0`，运动控制器保证其执行完毕
+
+## 集成方式
 
 - `gcode_controller.h` 中 `GenerateGcode()` 不再通过 UART 发送，改为调用 `MotionController::Execute(gcode)`
 - MCP 工具 `self.engraving.engrave_text` 接口不变
 - 引脚：释放 GPIO.19/20（原 UART2），改为步进控制
+- 上电初始化时将当前电机位置设为 (0, 0)
 
 ## 核心算法（参考 FluidNC 源码）
 
@@ -152,5 +159,4 @@ for (axis = X; axis < n_axis; axis++) {
 ## 后续扩展
 
 - G2/G3 圆弧插补（如果雕刻效果需要）
-- 软限位开关支持
-- 归零功能（当前配置 homing cycle 为 0）
+- 物理限位开关 + 自动归零
