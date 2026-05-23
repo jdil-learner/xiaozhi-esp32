@@ -3,9 +3,8 @@
 
 #include "mcp_server.h"
 #include "font_data.h"
+#include "motion_controller.h"
 
-#include <driver/uart.h>
-#include <driver/gpio.h>
 #include <esp_log.h>
 #include <cstring>
 #include <string>
@@ -16,11 +15,6 @@
 
 class KanjiVGController {
 private:
-    static constexpr uart_port_t UART_PORT  = UART_NUM_2;
-    static constexpr gpio_num_t UART_TX_PIN = GPIO_NUM_20;
-    static constexpr gpio_num_t UART_RX_PIN = GPIO_NUM_19;
-    static constexpr int UART_BAUD = 115200;
-
     static constexpr float ASCII_FONT_H = 21.0f;  // Hershey 基准高度
 
     // ─── UTF-8 解码 ───
@@ -223,19 +217,7 @@ private:
 
 public:
     KanjiVGController() {
-        uart_config_t uart_config = {
-            .baud_rate = UART_BAUD,
-            .data_bits = UART_DATA_8_BITS,
-            .parity    = UART_PARITY_DISABLE,
-            .stop_bits = UART_STOP_BITS_1,
-            .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        };
-        ESP_ERROR_CHECK(uart_driver_install(UART_PORT, 2048, 0, 0, NULL, 0));
-        ESP_ERROR_CHECK(uart_param_config(UART_PORT, &uart_config));
-        ESP_ERROR_CHECK(uart_set_pin(UART_PORT, UART_TX_PIN, UART_RX_PIN,
-                                      UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-        ESP_LOGI("KanjiVG", "UART2 initialized: TX=IO%d, RX=IO%d, baud=%d",
-                 UART_TX_PIN, UART_RX_PIN, UART_BAUD);
+        ESP_LOGI("KanjiVG", "Initialized (local motion controller mode)");
     }
 
     void Initialize(McpServer& mcp_server) {
@@ -287,11 +269,24 @@ public:
                 if (!gcode.empty() && gcode.compare(0, 6, "雕刻") == 0)
                     throw std::runtime_error(gcode);
 
-                int sent = uart_write_bytes(UART_PORT, gcode.c_str(), gcode.size());
-                ESP_LOGI("KanjiVG", "Sent %d/%d bytes via UART2", sent, gcode.size());
-
+                static MotionController mc;
+                static bool mc_initialized = false;
+                if (!mc_initialized) {
+                    mc.Init(
+                        106.666f,  // steps_per_mm_x
+                        106.666f,  // steps_per_mm_y
+                        700.0f,    // max_rate mm/min
+                        800.0f,    // acceleration mm/s²
+                        0.02f,     // junction_deviation mm
+                        42.0f      // max_travel mm
+                    );
+                    mc_initialized = true;
+                }
                 int line_count = 0;
                 for (char c : gcode) { if (c == '\n') line_count++; }
+
+                mc.Execute(gcode);
+                ESP_LOGI("KanjiVG", "Motion executed, %d lines", line_count);
 
                 cJSON* result = cJSON_CreateObject();
                 cJSON_AddStringToObject(result, "text", text.c_str());
@@ -302,7 +297,7 @@ public:
                 cJSON_AddNumberToObject(result, "y", y_start);
                 cJSON_AddNumberToObject(result, "lines", line_count);
                 cJSON_AddStringToObject(result, "gcode", gcode.c_str());
-                cJSON_AddStringToObject(result, "sent_to", "UART2");
+                cJSON_AddStringToObject(result, "sent_to", "local_motion_controller");
 
                 return result;
             });
