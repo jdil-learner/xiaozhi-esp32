@@ -5,6 +5,7 @@
 #include "planner.h"
 #include "stepper.h"
 #include "stepping_engine.h"
+#include <cstring>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -45,8 +46,26 @@ public:
             return;
         }
 
+        // 仅显示 G-code 注释行（含雕刻参数）
+        const char* gp = gcode.c_str();
+        while (*gp) {
+            if (*gp == ';') {
+                const char* nl = strchr(gp, '\n');
+                if (nl) {
+                    ESP_LOGI("GCode", "%.*s", (int)(nl - gp), gp);
+                    gp = nl + 1;
+                } else {
+                    ESP_LOGI("GCode", "%s", gp);
+                    break;
+                }
+            } else {
+                const char* nl = strchr(gp, '\n');
+                gp = nl ? nl + 1 : gp + strlen(gp);
+            }
+        }
+
         auto commands = GCodeParser::Parse(gcode);
-        ESP_LOGI("MotionController", "Executing %d G-code commands", (int)commands.size());
+        ESP_LOGI("MotionController", "Parsed %d G-code commands", (int)commands.size());
 
         float pos_x = 0.0f, pos_y = 0.0f;  // 追踪当前位置
         float last_x = 0.0f, last_y = 0.0f;

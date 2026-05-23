@@ -244,13 +244,12 @@ public:
             "  \"波浪号\"→~ \"方括号\"→[] \"花括号\"→{} \"反斜杠\"→\\\n"
             "参数:\n"
             "  `text` 要雕刻的文字   `size` 字高mm(1-42)默认10   `power` 激光功率0-1000默认1000\n"
-            "  `feed_rate` 速度mm/min默认400   `x` `y` 起始位置mm默认(0,0)\n"
+            "  `x` `y` 起始位置mm默认(0,0)  雕刻速度固定400mm/min\n"
             "雕刻范围 42x42mm, 超出则返回错误。",
             PropertyList({
                 Property("text", kPropertyTypeString),
                 Property("size", kPropertyTypeInteger, 10, 1, 42),
                 Property("power", kPropertyTypeInteger, 1000, 0, 1000),
-                Property("feed_rate", kPropertyTypeInteger, 400, 100, 5000),
                 Property("x", kPropertyTypeInteger, 0, 0, 40),
                 Property("y", kPropertyTypeInteger, 0, 0, 40),
             }),
@@ -258,7 +257,7 @@ public:
                 std::string text = properties["text"].value<std::string>();
                 float size_mm     = static_cast<float>(properties["size"].value<int>());
                 int power         = properties["power"].value<int>();
-                int feed_rate     = properties["feed_rate"].value<int>();
+                int feed_rate     = 400;  // 固定，不再暴露给 LLM
                 float x_start     = static_cast<float>(properties["x"].value<int>());
                 float y_start     = static_cast<float>(properties["y"].value<int>());
 
@@ -275,17 +274,9 @@ public:
                 int line_count = 0;
                 for (char c : gcode) { if (c == '\n') line_count++; }
 
-                // 在独立任务中执行，避免阻塞主任务
-                std::string* gcode_copy = new std::string(gcode);
-                xTaskCreate([](void* arg) {
-                    std::string* gc = (std::string*)arg;
-                    MotionController::Get().Execute(*gc);
-                    Stepper::GoIdle();
-                    delete gc;
-                    vTaskDelete(nullptr);
-                }, "cnc_exec", 8192, gcode_copy, 5, nullptr);
-
-                ESP_LOGI("KanjiVG", "Motion started, %d lines", line_count);
+                MotionController::Get().Execute(gcode);
+                Stepper::GoIdle();
+                ESP_LOGI("KanjiVG", "Motion done, %d lines", line_count);
 
                 cJSON* result = cJSON_CreateObject();
                 cJSON_AddStringToObject(result, "text", text.c_str());
