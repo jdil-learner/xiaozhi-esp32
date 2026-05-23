@@ -218,6 +218,9 @@ private:
 public:
     KanjiVGController() {
         ESP_LOGI("KanjiVG", "Initialized (local motion controller mode)");
+
+        // 共享初始化（仅一次，由构造函数在主任务中完成）
+        MotionController::GlobalInit(106.666f, 106.666f, 700.0f, 800.0f, 0.02f, 42.0f);
     }
 
     void Initialize(McpServer& mcp_server) {
@@ -269,24 +272,20 @@ public:
                 if (!gcode.empty() && gcode.compare(0, 6, "雕刻") == 0)
                     throw std::runtime_error(gcode);
 
-                static MotionController mc;
-                static bool mc_initialized = false;
-                if (!mc_initialized) {
-                    mc.Init(
-                        106.666f,  // steps_per_mm_x
-                        106.666f,  // steps_per_mm_y
-                        700.0f,    // max_rate mm/min
-                        800.0f,    // acceleration mm/s²
-                        0.02f,     // junction_deviation mm
-                        42.0f      // max_travel mm
-                    );
-                    mc_initialized = true;
-                }
                 int line_count = 0;
                 for (char c : gcode) { if (c == '\n') line_count++; }
 
-                mc.Execute(gcode);
-                ESP_LOGI("KanjiVG", "Motion executed, %d lines", line_count);
+                // 在独立任务中执行，避免阻塞主任务
+                std::string* gcode_copy = new std::string(gcode);
+                xTaskCreate([](void* arg) {
+                    std::string* gc = (std::string*)arg;
+                    MotionController::Get().Execute(*gc);
+                    Stepper::GoIdle();
+                    delete gc;
+                    vTaskDelete(nullptr);
+                }, "cnc_exec", 8192, gcode_copy, 5, nullptr);
+
+                ESP_LOGI("KanjiVG", "Motion started, %d lines", line_count);
 
                 cJSON* result = cJSON_CreateObject();
                 cJSON_AddStringToObject(result, "text", text.c_str());

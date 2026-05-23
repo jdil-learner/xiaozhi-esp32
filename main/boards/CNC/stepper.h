@@ -72,6 +72,7 @@ public:
 
     // ─── 提交 block（将一个 PlanBlock 转换为步进运动） ───
     static void SubmitBlock(PlanBlock* block) {
+        SteppingEngine::EnableMotors();  // 开始运动前使能
         _current_block = block;
 
         // 计算定时器周期

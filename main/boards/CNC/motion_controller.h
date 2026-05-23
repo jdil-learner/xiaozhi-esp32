@@ -19,16 +19,23 @@ private:
 public:
     MotionController() : current_x(0.0f), current_y(0.0f), laser_power(0), initialized(false) {}
 
-    void Init(float steps_x, float steps_y, float max_rate, float acceleration,
-              float junction_dev, float max_travel) {
+    static MotionController& Get() {
+        static MotionController instance;
+        return instance;
+    }
+
+    static void GlobalInit(float steps_x, float steps_y, float max_rate, float acceleration,
+                           float junction_dev, float max_travel) {
+        auto& mc = Get();
+        if (mc.initialized) return;
         Planner::Init(steps_x, steps_y, max_rate, acceleration, junction_dev, max_travel);
         SteppingEngine::Init();
         SteppingEngine::InitTimer(Stepper::PulseISR);
         Stepper::Init();
-        current_x   = 0.0f;
-        current_y   = 0.0f;
-        laser_power = 0;
-        initialized = true;
+        mc.current_x   = 0.0f;
+        mc.current_y   = 0.0f;
+        mc.laser_power = 0;
+        mc.initialized = true;
         ESP_LOGI("MotionController", "Initialized. Origin at (0,0)");
     }
 
@@ -41,9 +48,9 @@ public:
         auto commands = GCodeParser::Parse(gcode);
         ESP_LOGI("MotionController", "Executing %d G-code commands", (int)commands.size());
 
-        float last_x = 0.0f, last_y = 0.0f;  // 追踪最终位置用于归零
+        float pos_x = 0.0f, pos_y = 0.0f;  // 追踪当前位置
+        float last_x = 0.0f, last_y = 0.0f;
 
-        // 第一步：解析 G-code，队列到 Planner
         for (size_t i = 0; i < commands.size(); i++) {
             auto& cmd = commands[i];
 
@@ -63,15 +70,31 @@ public:
                     last_x = cmd.x;
                     last_y = cmd.y;
 
-                    while (Planner::IsFull()) {
-                        PlanBlock* b = Planner::GetCurrent();
-                        if (b) {
-                            Stepper::SubmitBlock(b);
-                            Stepper::WaitForIdle();
-                            Planner::DiscardCurrent();
-                        }
+                    // 直接从当前位置计算增量，绕过 Planner
+                    float dx = cmd.x - pos_x;
+                    float dy = cmd.y - pos_y;
+                    float mm = sqrtf(dx*dx + dy*dy);
+
+                    if (mm > 0.001f) {
+                        PlanBlock block;
+                        memset(&block, 0, sizeof(block));
+                        block.millimeters = mm;
+                        int32_t sx = (int32_t)roundf(dx * Planner::steps_per_mm_x);
+                        int32_t sy = (int32_t)roundf(dy * Planner::steps_per_mm_y);
+                        block.steps[0] = (uint32_t)abs(sx);
+                        block.steps[1] = (uint32_t)abs(sy);
+                        block.step_event_count = std::max(block.steps[0], block.steps[1]);
+                        block.direction_bits = 0;
+                        if (sx < 0) block.direction_bits |= 0x01;
+                        if (sy < 0) block.direction_bits |= 0x02;
+                        block.programmed_rate = feed;
+
+                        Stepper::SubmitBlock(&block);
+                        Stepper::WaitForIdle();
                     }
-                    Planner::BufferLine(cmd.x, cmd.y, feed, rapid);
+
+                    pos_x = cmd.x;
+                    pos_y = cmd.y;
                     break;
                 }
 
@@ -95,24 +118,7 @@ public:
             }
         }
 
-        // 第二步：逐个 block 提交 Stepper 执行
-        int n = 0;
-        while (!Planner::IsEmpty()) {
-            PlanBlock* block = Planner::GetCurrent();
-            if (!block) break;
-
-            n++;
-            ESP_LOGI("MotionController", "Block %d: %.2fmm %lu steps F=%.0f",
-                     n, block->millimeters, block->step_event_count,
-                     block->programmed_rate);
-
-            Stepper::SubmitBlock(block);
-            Stepper::WaitForIdle();
-            Planner::DiscardCurrent();
-        }
-        ESP_LOGI("MotionController", "All %d blocks done", n);
-
-        // 第三步：回到原点（直接构造 block，不走 Planner）
+        // 第二步：回到原点（直接构造 block，不走 Planner）
         ESP_LOGI("MotionController", "Returning to origin from (%.2f, %.2f)...", last_x, last_y);
         {
             float dx = 0.0f - last_x;

@@ -63,7 +63,7 @@ public:
             .intr_type    = GPIO_INTR_DISABLE,
         };
         gpio_config(&io_conf);
-        EnableMotors();
+        DisableMotors();  // 默认禁用，SubmitBlock 时才使能
 
         // 激光 PWM
         ledc_timer_config_t ledc_timer = {
