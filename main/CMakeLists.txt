@@ -61,7 +61,7 @@ list(APPEND SOURCES
     "boards/common/sy6970.cc"
     "boards/common/system_reset.cc"
 )
-list(APPEND INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/boards/common)
+list(APPEND INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/boards/common ${CMAKE_CURRENT_SOURCE_DIR}/boards/CNC)
 
 
 idf_build_get_property(build_components BUILD_COMPONENTS)

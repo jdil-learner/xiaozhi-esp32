@@ -272,9 +272,9 @@ cpp += '    return table;\n'
 cpp += '}\n\n'
 cpp += '#endif // __FONT_DATA_H__\n'
 
-with open('../main/boards/common/font_data.h', 'w', encoding='utf-8') as f:
+with open('../main/boards/CNC/font_data.h', 'w', encoding='utf-8') as f:
     f.write(cpp)
-print("  -> main/boards/common/font_data.h")
+print("  -> main/boards/CNC/font_data.h")
 
 # ========== 数据统计 ==========
 total_bytes = sum(len(strokes_to_array(font_data[k][0])) for k in font_data)
