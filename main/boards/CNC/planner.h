@@ -44,9 +44,6 @@ private:
     static float previous_unit_vec_y;
     static float previous_nominal_speed;
 
-    static float steps_per_mm_x;
-    static float steps_per_mm_y;
-
     static uint8_t NextIdx(uint8_t idx) {
         idx++;
         return (idx == PLANNER_BLOCKS) ? 0 : idx;
@@ -63,10 +60,12 @@ private:
         if (idx == planned) return;
 
         // ─── 反向遍历：计算最大入口速度 ───
+        // acceleration 单位 mm/s², 转换为 (mm/min)²: × (60 s/min)² = ×3600
+        const float ACCEL_SCALE = 2.0f * 3600.0f;
         PlanBlock* current = &buffer[idx];
         current->entry_speed_sqr = std::min(
             current->max_entry_speed_sqr,
-            2.0f * current->acceleration * current->millimeters
+            ACCEL_SCALE * current->acceleration * current->millimeters
         );
 
         idx = PrevIdx(idx);
@@ -79,7 +78,7 @@ private:
 
             if (current->entry_speed_sqr != current->max_entry_speed_sqr) {
                 float entry_sqr = next->entry_speed_sqr
-                    + 2.0f * current->acceleration * current->millimeters;
+                    + ACCEL_SCALE * current->acceleration * current->millimeters;
                 if (entry_sqr < current->max_entry_speed_sqr)
                     current->entry_speed_sqr = entry_sqr;
                 else
@@ -96,7 +95,7 @@ private:
 
             if (current->entry_speed_sqr < next->entry_speed_sqr) {
                 float entry_sqr = current->entry_speed_sqr
-                    + 2.0f * current->acceleration * current->millimeters;
+                    + ACCEL_SCALE * current->acceleration * current->millimeters;
                 if (entry_sqr < next->entry_speed_sqr) {
                     next->entry_speed_sqr = entry_sqr;
                     planned = idx;
@@ -115,6 +114,8 @@ public:
     static float acceleration;
     static float junction_deviation;
     static float max_travel;
+    static float steps_per_mm_x;
+    static float steps_per_mm_y;
 
     static void Init(float sx, float sy, float mr, float acc, float jd, float mt) {
         steps_per_mm_x   = sx;
@@ -164,6 +165,11 @@ public:
             if (tail == planned) planned = idx;
             tail = idx;
         }
+    }
+
+    static int BlockCount() {
+        if (head >= tail) return head - tail;
+        return PLANNER_BLOCKS - (tail - head);
     }
 
     static bool BufferLine(float x, float y, float feed_rate, bool rapid) {

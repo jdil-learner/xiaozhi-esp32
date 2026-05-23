@@ -1,10 +1,19 @@
 #ifndef __STEPPING_ENGINE_H__
 #define __STEPPING_ENGINE_H__
 
-#include <driver/gptimer.h>
-#include <driver/ledc.h>
-#include <driver/gpio.h>
-#include <esp_log.h>
+// 参考 FluidNC:
+//   esp32/timed_engine.c (GPIO 直驱步进引擎)
+//   esp32/StepTimer.cpp  (timer_ll 硬件定时器)
+//   src/Stepper.cpp      (Bresenham ISR)
+//   src/Stepping.cpp     (step/unstep 时序)
+
+#include "hal/timer_ll.h"
+#include "esp_intr_alloc.h"
+#include "soc/timer_periph.h"
+#include "driver/gpio.h"
+#include "driver/ledc.h"
+#include "esp_attr.h"
+#include "esp_log.h"
 #include <cstdint>
 #include <rom/ets_sys.h>
 
@@ -16,17 +25,34 @@
 #define STEP_ENABLE_PIN       GPIO_NUM_45
 #define LASER_PWM_PIN         GPIO_NUM_17
 
-
 // ─── 时序参数 ───
 #define STEP_PULSE_US         10
 #define STEP_DIR_DELAY_US     1
 #define STEP_IDLE_MS          25
-#define STEP_TIMER_RESOLUTION 1000000  // 1MHz → 1µs per tick
 
-// ─── 步进引擎 ───
+// FluidNC: fTimers=80MHz, fStepperTimer=20MHz → prescaler=4
+static const uint32_t fTimers       = 80000000;
+static const uint32_t fStepperTimer = 20000000;
+
 class SteppingEngine {
+private:
+    static bool _timer_running;
+
+    // ─── 定时器 ISR ───
+    static bool (*timer_callback)(void);
+
+    static void timer_isr_wrapper(void* arg) {
+        timer_ll_clear_intr_status(&TIMERG0, TIMER_LL_EVENT_ALARM(0));
+
+        if (timer_callback()) {
+            timer_ll_enable_alarm(&TIMERG0, 0, true);
+        }
+    }
+
 public:
+    // ─── 初始化 ───
     static void Init() {
+        // GPIO 初始化
         gpio_config_t io_conf = {
             .pin_bit_mask = (1ULL << STEP_X_STEP_PIN) | (1ULL << STEP_X_DIR_PIN)
                           | (1ULL << STEP_Y_STEP_PIN) | (1ULL << STEP_Y_DIR_PIN)
@@ -37,11 +63,9 @@ public:
             .intr_type    = GPIO_INTR_DISABLE,
         };
         gpio_config(&io_conf);
+        EnableMotors();
 
-        // 使能引脚低有效（A4988）
-        gpio_set_level(STEP_ENABLE_PIN, 0);
-
-        // 激光 PWM（LEDC）
+        // 激光 PWM
         ledc_timer_config_t ledc_timer = {
             .speed_mode       = LEDC_LOW_SPEED_MODE,
             .duty_resolution  = LEDC_TIMER_10_BIT,
@@ -68,8 +92,8 @@ public:
                  STEP_ENABLE_PIN, LASER_PWM_PIN);
     }
 
+    // ─── 激光 ───
     static void SetLaser(uint32_t duty) {
-        // duty: 0~1000 → 0~1023 (10-bit)
         uint32_t scaled = (duty * 1023) / 1000;
         ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, scaled);
         ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
@@ -80,96 +104,99 @@ public:
         ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
     }
 
-    // ─── ISR 回调 ───
-    using PulseCallback = bool (*)();
-    static PulseCallback pulse_callback;
-
-    // ─── 定时器 ───
-    static gptimer_handle_t timer_;
-
-    static bool StartTimer(PulseCallback callback) {
-        pulse_callback = callback;
-
-        gptimer_config_t timer_config = {
-            .clk_src       = GPTIMER_CLK_SRC_DEFAULT,
-            .direction     = GPTIMER_COUNT_UP,
-            .resolution_hz = STEP_TIMER_RESOLUTION,
-        };
-        ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &timer_));
-
-        gptimer_alarm_config_t alarm_config = {
-            .alarm_count     = 1000,
-            .reload_count    = 0,
-            .flags           = { .auto_reload_on_alarm = true },
-        };
-        ESP_ERROR_CHECK(gptimer_set_alarm_action(timer_, &alarm_config));
-
-        gptimer_event_callbacks_t cbs = {
-            .on_alarm = TimerISR,
-        };
-        ESP_ERROR_CHECK(gptimer_register_event_callbacks(timer_, &cbs, nullptr));
-        ESP_ERROR_CHECK(gptimer_enable(timer_));
-        ESP_ERROR_CHECK(gptimer_start(timer_));
-
-        ESP_LOGI("SteppingEngine", "Timer started at %d Hz", STEP_TIMER_RESOLUTION);
-        return true;
+    // ─── 电机使能 ───
+    static void EnableMotors() {
+        gpio_set_level(STEP_ENABLE_PIN, 0);
     }
-
-    static void StopTimer() {
-        if (timer_) {
-            gptimer_stop(timer_);
-            gptimer_disable(timer_);
-            gptimer_del_timer(timer_);
-            timer_ = nullptr;
-        }
-        DisableMotors();
-        LaserOff();
-    }
-
-    static void SetTimerPeriod(uint16_t ticks) {
-        gptimer_alarm_config_t alarm_config = {
-            .alarm_count     = (uint32_t)ticks,
-            .reload_count    = 0,
-            .flags           = { .auto_reload_on_alarm = true },
-        };
-        gptimer_set_alarm_action(timer_, &alarm_config);
-    }
-
-    static void SetStepPins(uint8_t step_bits) {
-        if (step_bits & 0x01) gpio_set_level(STEP_X_STEP_PIN, 1);
-        if (step_bits & 0x02) gpio_set_level(STEP_Y_STEP_PIN, 1);
-    }
-
-    static void ClearAllPins() {
-        gpio_set_level(STEP_X_STEP_PIN, 0);
-        gpio_set_level(STEP_Y_STEP_PIN, 0);
-    }
-
-    static void SetDirection(uint8_t dir_bits) {
-        gpio_set_level(STEP_X_DIR_PIN, (dir_bits & 0x01) ? 1 : 0);
-        gpio_set_level(STEP_Y_DIR_PIN, (dir_bits & 0x02) ? 1 : 0);
-        esp_rom_delay_us(STEP_DIR_DELAY_US);
-    }
-
     static void DisableMotors() {
         gpio_set_level(STEP_ENABLE_PIN, 1);
     }
 
-    static void EnableMotors() {
-        gpio_set_level(STEP_ENABLE_PIN, 0);
+    // ─── 定时器（参考 FluidNC StepTimer.cpp） ───
+    static void InitTimer(bool (*callback)(void)) {
+        timer_callback = callback;
+
+        // 禁用并配置 TG0 TIMER_0
+        timer_ll_enable_intr(&TIMERG0, TIMER_LL_EVENT_ALARM(0), false);
+        timer_ll_enable_counter(&TIMERG0, 0, false);
+        timer_ll_set_reload_value(&TIMERG0, 0, 0ULL);
+        timer_ll_trigger_soft_reload(&TIMERG0, 0);
+
+        // 预分频: 80MHz / prescaler = 20MHz → prescaler = 4
+        timer_ll_set_clock_prescale(&TIMERG0, 0, fTimers / fStepperTimer);
+        timer_ll_set_count_direction(&TIMERG0, 0, GPTIMER_COUNT_UP);
+        timer_ll_enable_intr(&TIMERG0, TIMER_LL_EVENT_ALARM(0), false);
+        timer_ll_clear_intr_status(&TIMERG0, TIMER_LL_EVENT_ALARM(0));
+        timer_ll_enable_alarm(&TIMERG0, 0, false);
+        timer_ll_enable_auto_reload(&TIMERG0, 0, true);
+        timer_ll_enable_counter(&TIMERG0, 0, false);
+        timer_ll_set_reload_value(&TIMERG0, 0, 0);
+        timer_ll_trigger_soft_reload(&TIMERG0, 0);
+
+        // 注册中断（LEVEL3 高优先级，不使用 IRAM flag 避免 l32r 字面值池问题）
+        esp_intr_alloc_intrstatus(timer_group_periph_signals.groups[0].timer_irq_id[0],
+                                  ESP_INTR_FLAG_LEVEL3,
+                                  (uint32_t)timer_ll_get_intr_status_reg(&TIMERG0),
+                                  TIMER_LL_EVENT_ALARM(0),
+                                  timer_isr_wrapper,
+                                  nullptr,
+                                  nullptr);
+
+        timer_ll_enable_intr(&TIMERG0, TIMER_LL_EVENT_ALARM(0), true);
+        _timer_running = false;
+
+        ESP_LOGI("SteppingEngine", "Timer init: fTimer=%d Hz (prescaler=%d)",
+                 fStepperTimer, (int)(fTimers / fStepperTimer));
     }
 
-private:
-    static bool TimerISR(gptimer_handle_t timer, const gptimer_alarm_event_data_t* edata, void* user_ctx) {
-        if (pulse_callback) {
-            return pulse_callback();
-        }
-        return false;
+    static void StartTimer() {
+        // 先完整复位定时器状态，再启动
+        timer_ll_enable_counter(&TIMERG0, 0, false);
+        timer_ll_enable_alarm(&TIMERG0, 0, false);
+        timer_ll_clear_intr_status(&TIMERG0, TIMER_LL_EVENT_ALARM(0));
+        timer_ll_set_reload_value(&TIMERG0, 0, 0ULL);
+        timer_ll_trigger_soft_reload(&TIMERG0, 0);
+        // alarm value 已由 SetTimerPeriod 预设
+        timer_ll_enable_alarm(&TIMERG0, 0, true);
+        timer_ll_enable_counter(&TIMERG0, 0, true);
+        _timer_running = true;
+    }
+
+    static void StopTimer() {
+        timer_ll_enable_counter(&TIMERG0, 0, false);
+        timer_ll_enable_alarm(&TIMERG0, 0, false);
+        _timer_running = false;
+    }
+
+    static void SetTimerPeriod(uint32_t ticks) {
+        timer_ll_set_alarm_value(&TIMERG0, 0, (uint64_t)ticks);
+    }
+
+    // ─── GPIO 步进控制（参考 FluidNC Stepping.cpp step/unstep） ───
+
+    // 设置方向引脚
+    static void SetDirection(uint8_t dir_bits) {
+        gpio_set_level(STEP_X_DIR_PIN, (dir_bits & 0x01) ? 1 : 0);
+        gpio_set_level(STEP_Y_DIR_PIN, (dir_bits & 0x02) ? 1 : 0);
+        // 方向建立延时
+        esp_rom_delay_us(STEP_DIR_DELAY_US);
+    }
+
+    // 开始步进脉冲（拉高 step 引脚 + 等待脉冲宽度）
+    static void StartStep(uint8_t step_bits) {
+        if (step_bits & 0x01) gpio_set_level(STEP_X_STEP_PIN, 1);
+        if (step_bits & 0x02) gpio_set_level(STEP_Y_STEP_PIN, 1);
+        esp_rom_delay_us(STEP_PULSE_US);
+    }
+
+    // 结束步进脉冲（拉低 step 引脚）
+    static void EndStep() {
+        gpio_set_level(STEP_X_STEP_PIN, 0);
+        gpio_set_level(STEP_Y_STEP_PIN, 0);
     }
 };
 
-// 静态成员定义
-inline SteppingEngine::PulseCallback SteppingEngine::pulse_callback = nullptr;
-inline gptimer_handle_t SteppingEngine::timer_ = nullptr;
+inline bool     SteppingEngine::_timer_running = false;
+inline bool (*SteppingEngine::timer_callback)(void) = nullptr;
 
 #endif // __STEPPING_ENGINE_H__

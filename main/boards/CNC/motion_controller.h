@@ -23,6 +23,7 @@ public:
               float junction_dev, float max_travel) {
         Planner::Init(steps_x, steps_y, max_rate, acceleration, junction_dev, max_travel);
         SteppingEngine::Init();
+        SteppingEngine::InitTimer(Stepper::PulseISR);
         Stepper::Init();
         current_x   = 0.0f;
         current_y   = 0.0f;
@@ -40,8 +41,9 @@ public:
         auto commands = GCodeParser::Parse(gcode);
         ESP_LOGI("MotionController", "Executing %d G-code commands", (int)commands.size());
 
-        Stepper::WakeUp();
+        float last_x = 0.0f, last_y = 0.0f;  // 追踪最终位置用于归零
 
+        // 第一步：解析 G-code，队列到 Planner
         for (size_t i = 0; i < commands.size(); i++) {
             auto& cmd = commands[i];
 
@@ -58,12 +60,18 @@ public:
                         continue;
                     }
 
+                    last_x = cmd.x;
+                    last_y = cmd.y;
+
                     while (Planner::IsFull()) {
-                        Stepper::PrepBuffer();
-                        vTaskDelay(pdMS_TO_TICKS(1));
+                        PlanBlock* b = Planner::GetCurrent();
+                        if (b) {
+                            Stepper::SubmitBlock(b);
+                            Stepper::WaitForIdle();
+                            Planner::DiscardCurrent();
+                        }
                     }
                     Planner::BufferLine(cmd.x, cmd.y, feed, rapid);
-                    Stepper::PrepBuffer();
                     break;
                 }
 
@@ -87,43 +95,50 @@ public:
             }
         }
 
-        // 等待 Planner 队列排空
-        ESP_LOGI("MotionController", "Waiting for planner to drain...");
+        // 第二步：逐个 block 提交 Stepper 执行
+        int n = 0;
         while (!Planner::IsEmpty()) {
             PlanBlock* block = Planner::GetCurrent();
-            if (block && !block->processed) {
-                Stepper::SubmitBlock(block);
-                block->processed = true;
-            }
+            if (!block) break;
 
-            Stepper::PrepBuffer();
-            if (Planner::GetCurrent() == nullptr) {
-                Stepper::WaitForIdle();
-                Planner::DiscardCurrent();
-            }
-            vTaskDelay(pdMS_TO_TICKS(1));
-        }
+            n++;
+            ESP_LOGI("MotionController", "Block %d: %.2fmm %lu steps F=%.0f",
+                     n, block->millimeters, block->step_event_count,
+                     block->programmed_rate);
 
-        // 回到原点
-        ESP_LOGI("MotionController", "Returning to origin...");
-        while (Planner::IsFull()) {
-            vTaskDelay(pdMS_TO_TICKS(1));
+            Stepper::SubmitBlock(block);
+            Stepper::WaitForIdle();
+            Planner::DiscardCurrent();
         }
-        Planner::BufferLine(0.0f, 0.0f, Planner::max_rate, true);
+        ESP_LOGI("MotionController", "All %d blocks done", n);
+
+        // 第三步：回到原点（直接构造 block，不走 Planner）
+        ESP_LOGI("MotionController", "Returning to origin from (%.2f, %.2f)...", last_x, last_y);
         {
-            PlanBlock* block = Planner::GetCurrent();
-            if (block) {
-                Stepper::SubmitBlock(block);
-                block->processed = true;
+            float dx = 0.0f - last_x;
+            float dy = 0.0f - last_y;
+            float mm = sqrtf(dx*dx + dy*dy);
+
+            if (mm > 0.001f) {
+                PlanBlock home;
+                memset(&home, 0, sizeof(home));
+                home.millimeters     = mm;
+                int32_t sx = (int32_t)roundf(dx * Planner::steps_per_mm_x);
+                int32_t sy = (int32_t)roundf(dy * Planner::steps_per_mm_y);
+                home.steps[0]        = (uint32_t)abs(sx);
+                home.steps[1]        = (uint32_t)abs(sy);
+                home.step_event_count = std::max(home.steps[0], home.steps[1]);
+                home.direction_bits   = 0;
+                if (sx < 0) home.direction_bits |= 0x01;
+                if (sy < 0) home.direction_bits |= 0x02;
+                home.programmed_rate  = Planner::max_rate;
+
+                Stepper::SubmitBlock(&home);
+                Stepper::WaitForIdle();
             }
         }
-
-        Stepper::PrepBuffer();
-        Stepper::WaitForIdle();
-        Planner::DiscardCurrent();
 
         Stepper::GoIdle();
-        SteppingEngine::LaserOff();
         current_x = 0.0f;
         current_y = 0.0f;
         ESP_LOGI("MotionController", "Done. Position: (0, 0)");
