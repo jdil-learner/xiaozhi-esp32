@@ -218,9 +218,6 @@ private:
 public:
     KanjiVGController() {
         ESP_LOGI("KanjiVG", "Initialized (local motion controller mode)");
-
-        // 共享初始化（仅一次，由构造函数在主任务中完成）
-        MotionController::GlobalInit(106.666f, 106.666f, 700.0f, 800.0f, 0.02f, 42.0f);
     }
 
     void Initialize(McpServer& mcp_server) {
@@ -237,18 +234,13 @@ public:
             "  \"雕刻xy坐标分别为10mm和10mm的你好\" → x=10, y=10, text=\"你好\"\n"
             "  \"在x=10,y=5位置雕刻汉字中国\" → x=10, y=5, text=\"中国\"\n"
             "  \"雕刻x坐标5,y坐标10的汉字你是\" → x=5, y=10, text=\"你是\"\n"
-            "符号口述→实际字符: \"at\"\"艾特\"→@ \"美元\"→$ \"井号\"→# \"百分号\"→% \"和\"\"and\"→&\n"
-            "  \"星号\"→* \"加号\"→+ \"减号\"\"横线\"→- \"点\"\"句号\"→. \"斜杠\"→/ \"冒号\"→:\n"
-            "  \"问号\"→? \"感叹号\"→! \"括号\"→() \"小于\"→< \"大于\"→> \"等于\"→=\n"
-            "  \"引号\"→\" \"逗号\"→, \"分号\"→; \"下划线\"→_ \"竖线\"→|\n"
-            "  \"波浪号\"→~ \"方括号\"→[] \"花括号\"→{} \"反斜杠\"→\\\n"
             "参数:\n"
             "  `text` 要雕刻的文字   `size` 字高mm(1-42)默认10   `power` 激光功率0-1000默认1000\n"
             "  `x` `y` 起始位置mm默认(0,0)  雕刻速度固定400mm/min\n"
-            "雕刻范围 42x42mm, 超出则返回错误。",
+            "雕刻范围 42x42mm, 超出则返回错误。没有特定要求，不要擅自重复雕刻。",
             PropertyList({
                 Property("text", kPropertyTypeString),
-                Property("size", kPropertyTypeInteger, 10, 1, 42),
+                Property("size", kPropertyTypeInteger, 5, 1, 42),
                 Property("power", kPropertyTypeInteger, 1000, 0, 1000),
                 Property("x", kPropertyTypeInteger, 0, 0, 40),
                 Property("y", kPropertyTypeInteger, 0, 0, 40),
@@ -274,6 +266,7 @@ public:
                 int line_count = 0;
                 for (char c : gcode) { if (c == '\n') line_count++; }
 
+                MotionController::GlobalInit(106.666f, 106.666f, 700.0f, 800.0f, 0.02f, 42.0f);
                 MotionController::Get().Execute(gcode);
                 Stepper::GoIdle();
                 ESP_LOGI("KanjiVG", "Motion done, %d lines", line_count);
