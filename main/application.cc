@@ -1072,6 +1072,14 @@ void Application::SendMcpMessage(const std::string& payload) {
     });
 }
 
+void Application::SendListenDetect(const std::string& text) {
+    Schedule([this, text = std::move(text)]() {
+        if (protocol_) {
+            protocol_->SendListenDetect(text);
+        }
+    });
+}
+
 void Application::SetAecMode(AecMode mode) {
     aec_mode_ = mode;
     Schedule([this]() {

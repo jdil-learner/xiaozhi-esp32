@@ -89,10 +89,11 @@ def normalize_strokes(strokes, vw, vh, flip_y=True):
     if ch_w <= 0: ch_w = vw
     if ch_h <= 0: ch_h = vh
 
-    # 统一高度归一化: 所有字缩放到相同高度, 宽字按比例扩展不溢出即可
+    # 统一高度归一化: 所有字缩放到相同高度
+    # 若宽度超出 GRID_SIZE, 按宽度重新缩放以保持形状正确
     scale = GRID_SIZE / ch_h
-    if ch_w * scale > GRID_SIZE * 2:
-        scale = (GRID_SIZE * 2) / ch_w  # 极宽字防溢出
+    if ch_w * scale > GRID_SIZE:
+        scale = GRID_SIZE / ch_w
 
     result = []
     for s in strokes:
@@ -188,6 +189,11 @@ with open(HANZI_FILE, 'r', encoding='utf-8') as f:
         hanzi_data[d['character']] = d['medians']
 print(f"  graphics.txt: {len(hanzi_data)} chars")
 
+# 个别字符在归一化后缩放（相对于中心点）
+CHAR_SCALE = {
+    '口': 0.70,
+}
+
 cn_count = 0
 for ch in cn_chars:
     if ch not in hanzi_data:
@@ -195,6 +201,7 @@ for ch in cn_chars:
     medians = hanzi_data[ch]
     if not medians:
         continue
+
     # Simplify
     simple = [dp(s, 2.5) for s in medians if len(s) >= 2]
     simple = [s for s in simple if len(s) >= 2]
@@ -202,6 +209,22 @@ for ch in cn_chars:
         continue
     # Normalize (NO flip: Make Me a Hanzi Y+ up, same as G-code)
     norm = normalize_strokes(simple, 1024, 1024, flip_y=False)
+
+    # 归一化后缩放（绕中心点）
+    if ch in CHAR_SCALE:
+        sf = CHAR_SCALE[ch]
+        all_x = [x for s in norm for x, _ in s]
+        all_y = [y for s in norm for _, y in s]
+        ncx = (min(all_x) + max(all_x)) / 2.0
+        ncy = (min(all_y) + max(all_y)) / 2.0
+        new_norm = []
+        for s in norm:
+            ns = [(max(0, min(GRID_SIZE, int(round((x - ncx) * sf + ncx)))),
+                   max(0, min(GRID_SIZE, int(round((y - ncy) * sf + ncy)))))
+                  for x, y in s]
+            new_norm.append(ns)
+        norm = new_norm
+
     w = get_char_width(norm)
     font_data[ch] = (norm, w)
     char_order.append((ch, ch))
@@ -285,16 +308,34 @@ print(f"\n  Size: {total_bytes} bytes, {total_strokes} strokes, {total_vertices}
 # ========== 生成 G-code 测试文件 ==========
 print("\n=== Generating G-code test files ===")
 SIZE_MM = 10.0; POWER = 800; FEED = 800
+ASCII_FONT_H = 21.0  # Hershey 基准高度
 
 def to_gcode(ch, strokes, w):
-    scale = SIZE_MM / FONT_HEIGHT
-    lines = [f"; {ch}  KanjiVG/Hanzi  {SIZE_MM}mm"]
+    is_ascii = ord(ch) < 128
+    scale = SIZE_MM / (ASCII_FONT_H if is_ascii else FONT_HEIGHT)
+
+    lines = [f"; {ch}  {'ASCII/Hershey' if is_ascii else 'Hanzi'}  {SIZE_MM}mm"]
     lines.append("G21 ; mm"); lines.append("G90 ; absolute")
+
+    # ASCII: Hershey 坐标 Y+ 向下, 需翻转; 并且有负坐标 (descender)
+    # Hanzi: 0~127 归一化, Y+ 向上, 无需翻转
+    all_x = [x for s in strokes for x, _ in s]
+    all_y = [y for s in strokes for _, y in s]
+    min_x = min(all_x) if all_x else 0
+    max_y = max(all_y) if all_y else 0
+
+    x_off = -min_x * scale
+
     for s in strokes:
         simple = dp(s, 1.0)
         for i, (x, y) in enumerate(simple):
-            gx = x * scale
-            gy = y * scale  # 已经归一化到 Y+ 向上
+            gx = x_off + x * scale
+            if is_ascii:
+                gy = max_y * scale - y * scale  # Y 翻转: Hershey Y+↓ → G-code Y+↑
+            else:
+                gy = y * scale
+            if gx < 0 or gy < 0 or gx > 42 or gy > 42:
+                print(f"  WARNING: {ch} @({gx:.1f},{gy:.1f}) out of 42x42 range")
             if i == 0:
                 lines.append(f"G0 X{gx:.3f} Y{gy:.3f}")
                 lines.append(f"M3 S{POWER}")

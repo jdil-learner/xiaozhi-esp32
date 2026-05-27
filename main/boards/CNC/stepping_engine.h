@@ -18,11 +18,11 @@
 #include <rom/ets_sys.h>
 
 // ─── 引脚配置 ───
-#define STEP_X_STEP_PIN       GPIO_NUM_21
-#define STEP_X_DIR_PIN        GPIO_NUM_20
-#define STEP_Y_STEP_PIN       GPIO_NUM_47
-#define STEP_Y_DIR_PIN        GPIO_NUM_48
-#define STEP_ENABLE_PIN       GPIO_NUM_45
+#define STEP_X_STEP_PIN       GPIO_NUM_13
+#define STEP_X_DIR_PIN        GPIO_NUM_12
+#define STEP_Y_STEP_PIN       GPIO_NUM_10
+#define STEP_Y_DIR_PIN        GPIO_NUM_11
+#define STEP_ENABLE_PIN       GPIO_NUM_9
 #define LASER_PWM_PIN         GPIO_NUM_17
 
 // ─── 时序参数 ───
@@ -56,13 +56,15 @@ public:
         gpio_config_t io_conf = {
             .pin_bit_mask = (1ULL << STEP_X_STEP_PIN) | (1ULL << STEP_X_DIR_PIN)
                           | (1ULL << STEP_Y_STEP_PIN) | (1ULL << STEP_Y_DIR_PIN)
-                          | (1ULL << STEP_ENABLE_PIN),
+                          | (1ULL << STEP_ENABLE_PIN)
+                          | (1ULL << LASER_PWM_PIN),
             .mode         = GPIO_MODE_OUTPUT,
             .pull_up_en   = GPIO_PULLUP_DISABLE,
             .pull_down_en = GPIO_PULLDOWN_DISABLE,
             .intr_type    = GPIO_INTR_DISABLE,
         };
         gpio_config(&io_conf);
+        gpio_set_level(LASER_PWM_PIN, 0);  // 上电默认低电平，防止激光误触发
         DisableMotors();  // 默认禁用，SubmitBlock 时才使能
 
         // 激光 PWM

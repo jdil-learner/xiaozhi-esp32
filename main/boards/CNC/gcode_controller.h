@@ -2,9 +2,12 @@
 #define __GCODE_CONTROLLER_H__
 
 #include "mcp_server.h"
+#include "application.h"
 #include "font_data.h"
 #include "motion_controller.h"
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <esp_log.h>
 #include <cstring>
 #include <string>
@@ -91,7 +94,7 @@ private:
     static void GenHanziChar(std::string& gcode, const int8_t* data,
                              float& x_cursor, float y_base,
                              float scale, int power, int feed_rate) {
-        int8_t min_x = 127, min_y = 127;
+        int8_t min_x = 127, min_y = 127, max_y = -128;
         {
             const int8_t* scan = data;
             while (*scan != FONT_STROKE_END) {
@@ -100,6 +103,7 @@ private:
                     int8_t sx = scan[i * 2], sy = scan[i * 2 + 1];
                     if (sx < min_x) min_x = sx;
                     if (sy < min_y) min_y = sy;
+                    if (sy > max_y) max_y = sy;
                 }
                 scan += n * 2;
             }
@@ -108,6 +112,12 @@ private:
         char buf[128];
         float x_off = x_cursor - min_x * scale;
         float y_off = y_base - min_y * scale;
+
+        // 宽字(如"一""心")按宽度缩放后高度不足，垂直居中使其与其他字对齐
+        float ch_h = static_cast<float>(max_y - min_y) * scale;
+        float nominal_h = FONT_GRID_SIZE * scale;
+        if (ch_h < nominal_h * 0.75f)
+            y_off += (nominal_h - ch_h) * 0.5f;
 
         while (*data != FONT_STROKE_END) {
             int8_t n = *data++;
@@ -237,7 +247,7 @@ public:
             "参数:\n"
             "  `text` 要雕刻的文字   `size` 字高mm(1-42)默认5   `power` 激光功率0-1000默认1000\n"
             "  `x` `y` 起始位置mm默认(0,0)  雕刻速度固定400mm/min\n"
-            "雕刻范围 42x42mm, 超出则返回错误。没有特定要求，不要擅自重复雕刻。",
+            "雕刻范围 42x42mm, 超出则返回错误。没有特定要求，不要擅自重复雕刻。结束后等待雕刻完成,不要回复其他无关内容",
             PropertyList({
                 Property("text", kPropertyTypeString),
                 Property("size", kPropertyTypeInteger, 5, 1, 42),
@@ -249,7 +259,7 @@ public:
                 std::string text = properties["text"].value<std::string>();
                 float size_mm     = static_cast<float>(properties["size"].value<int>());
                 int power         = properties["power"].value<int>();
-                int feed_rate     = 400;  // 固定，不再暴露给 LLM
+                int feed_rate     = 400;
                 float x_start     = static_cast<float>(properties["x"].value<int>());
                 float y_start     = static_cast<float>(properties["y"].value<int>());
 
@@ -266,23 +276,43 @@ public:
                 int line_count = 0;
                 for (char c : gcode) { if (c == '\n') line_count++; }
 
-                MotionController::GlobalInit(106.666f, 106.666f, 700.0f, 800.0f, 0.02f, 42.0f);
-                MotionController::Get().Execute(gcode);
-                Stepper::GoIdle();
-                ESP_LOGI("KanjiVG", "Motion done, %d lines", line_count);
+                // 启动后台雕刻任务
+                struct Ctx {
+                    std::string gcode;
+                    std::string text;
+                    int line_count;
+                };
+                auto* ctx = new Ctx{std::move(gcode), std::move(text), line_count};
 
-                cJSON* result = cJSON_CreateObject();
-                cJSON_AddStringToObject(result, "text", text.c_str());
-                cJSON_AddNumberToObject(result, "size_mm", size_mm);
-                cJSON_AddNumberToObject(result, "power", power);
-                cJSON_AddNumberToObject(result, "feed_rate", feed_rate);
-                cJSON_AddNumberToObject(result, "x", x_start);
-                cJSON_AddNumberToObject(result, "y", y_start);
-                cJSON_AddNumberToObject(result, "lines", line_count);
-                cJSON_AddStringToObject(result, "gcode", gcode.c_str());
-                cJSON_AddStringToObject(result, "sent_to", "local_motion_controller");
+                xTaskCreate([](void* arg) {
+                    auto* ctx = static_cast<Ctx*>(arg);
+                    try {
+                        MotionController::GlobalInit(106.666f, 106.666f, 700.0f, 800.0f, 0.02f, 42.0f);
+                        vTaskDelay(pdMS_TO_TICKS(100));  // 等待步进驱动稳定，避免首次移动丢步
+                        MotionController::Get().Execute(ctx->gcode);
+                        Stepper::GoIdle();
+                        ESP_LOGI("KanjiVG", "Motion done, %d lines", ctx->line_count);
 
-                return result;
+                        // 通过 listen/detect 消息通知服务器雕刻完成
+                        // 服务器收到后会将文字导入对话, 触发 LLM 生成 TTS 播报
+                        Application::GetInstance().SendListenDetect("雕刻已完成：" + ctx->text);
+                    } catch (const std::exception& e) {
+                        ESP_LOGE("KanjiVG", "Engrave failed: %s", e.what());
+                        Application::GetInstance().SendListenDetect("雕刻失败：" + std::string(e.what()));
+                    }
+                    delete ctx;
+                    vTaskDelete(nullptr);
+                }, "engrave", 8192, ctx, 5, nullptr);
+
+                ESP_LOGI("KanjiVG", "Engrave task started, %d lines", line_count);
+
+                // 立即返回 "started", 服务器不会超时
+                cJSON* ack = cJSON_CreateObject();
+                cJSON_AddStringToObject(ack, "status", "started");
+                cJSON_AddStringToObject(ack, "text", text.c_str());
+                cJSON_AddNumberToObject(ack, "size_mm", size_mm);
+                cJSON_AddNumberToObject(ack, "lines", line_count);
+                return ack;
             });
     }
 };

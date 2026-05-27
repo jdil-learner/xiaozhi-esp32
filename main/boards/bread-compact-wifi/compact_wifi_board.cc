@@ -29,7 +29,7 @@ private:
     esp_lcd_panel_handle_t panel_ = nullptr;
     Display* display_ = nullptr;
     Button boot_button_;
-    // Button touch_button_;  // GPIO.47 被 CNC Y_STEP 占用
+    Button touch_button_;
     Button volume_up_button_;
     Button volume_down_button_;
 
@@ -110,7 +110,12 @@ private:
             }
             app.ToggleChatState();
         });
-        // touch_button_.OnPressDown / OnPressUp 已禁用（GPIO.47 被 CNC Y_STEP 占用）
+        touch_button_.OnPressDown([this]() {
+            Application::GetInstance().StartListening();
+        });
+        touch_button_.OnPressUp([this]() {
+            Application::GetInstance().StopListening();
+        });
 
         volume_up_button_.OnClick([this]() {
             auto codec = GetAudioCodec();
@@ -153,7 +158,7 @@ private:
 public:
     CompactWifiBoard() :
         boot_button_(BOOT_BUTTON_GPIO),
-        // touch_button_(TOUCH_BUTTON_GPIO),  // GPIO.47 被 CNC Y_STEP 占用
+        touch_button_(TOUCH_BUTTON_GPIO),
         volume_up_button_(VOLUME_UP_BUTTON_GPIO),
         volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {
         InitializeDisplayI2c();
@@ -162,11 +167,10 @@ public:
         InitializeTools();
     }
 
-    // GPIO.48 被 CNC Y_DIR 占用，LED 暂时禁用
-    // virtual Led* GetLed() override {
-    //     static SingleLed led(BUILTIN_LED_GPIO);
-    //     return &led;
-    // }
+    virtual Led* GetLed() override {
+        static SingleLed led(BUILTIN_LED_GPIO);
+        return &led;
+    }
 
     virtual AudioCodec* GetAudioCodec() override {
 #ifdef AUDIO_I2S_METHOD_SIMPLEX

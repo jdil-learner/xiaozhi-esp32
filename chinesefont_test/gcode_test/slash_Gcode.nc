@@ -1,7 +1,7 @@
-; I  10.0mm  S1000
+; /  ASCII/Hershey  10.0mm  S1000
 G21 ; mm
 G90 ; absolute
-G0 X0.000 Y10.000
+G0 X8.571 Y15.238
 M3 S1000
 G1 X0.000 Y0.000 F400
 M5

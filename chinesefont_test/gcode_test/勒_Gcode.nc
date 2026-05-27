@@ -1,6 +1,7 @@
 ; 勒  10.0mm  S1000
 G21 ; mm
 G90 ; absolute
+; Char: 勒 (U+52D2)
 G0 X0.551 Y7.559
 M3 S1000
 G1 X1.417 Y7.559 F400
