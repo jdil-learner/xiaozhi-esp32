@@ -184,20 +184,43 @@ private:
                 }
             }
         }
-        float ascii_y_off = y_start + ascii_max_y * ascii_scale;
+        float ascii_y_off_ref = y_start + ascii_max_y * ascii_scale;
         float ascii_height = has_ascii ? (ascii_max_y - ascii_min_y) * ascii_scale : 0;
         float total_height = (ascii_height > size_mm) ? ascii_height : size_mm;
 
-        if (x_start + total_width > ENGRAVING_AREA_WIDTH ||
-            y_start + total_height > ENGRAVING_AREA_HEIGHT) {
+        // ─── 根据锚点位置自动调整文字延伸方向 ───
+        // 默认: 锚点为左下角, 文字向右(X+)上(Y+)延伸
+        float render_x = x_start;
+        float render_y = y_start;
+
+        // 右侧超出 → 锚点变为右下角, 文字向左延伸
+        if (x_start + total_width > ENGRAVING_AREA_WIDTH)
+            render_x = x_start - total_width;
+        // 上侧超出 → 锚点变为左上角, 文字向下延伸
+        if (y_start + total_height > ENGRAVING_AREA_HEIGHT)
+            render_y = y_start - total_height;
+
+        // 边界校验
+        if (render_x < 0 || render_y < 0 ||
+            render_x + total_width > ENGRAVING_AREA_WIDTH ||
+            render_y + total_height > ENGRAVING_AREA_HEIGHT) {
             int len2 = snprintf(buf, sizeof(buf),
-                "雕刻超42x42mm范围。宽%.0f高%.0f起点(%.0f,%.0f)。请缩短文字或减小字号。",
-                total_width, total_height, x_start, y_start);
+                "文字\"%s\"大小%.0fmm超出范围。宽%.0f高%.0f。请缩短文字或减小字号。",
+                text.c_str(), size_mm, total_width, total_height);
             return std::string(buf, len2);
         }
 
+        // 根据偏移量调整 ASCII 和汉字的 Y 基准
+        float ascii_y_off = ascii_y_off_ref + (render_y - y_start);
+        float hanzi_y_base = render_y;
+
+        int len3 = snprintf(buf, sizeof(buf),
+            "; Anchor (%.0f,%.0f) → Render (%.0f,%.0f)\n",
+            x_start, y_start, render_x, render_y);
+        gcode.append(buf, len3);
+
         // 逐字生成
-        float x_cursor = x_start;
+        float x_cursor = render_x;
         const char* p = text.c_str();
         const char* end = p + text.size();
         while (p < end) {
@@ -216,7 +239,7 @@ private:
                 GenAsciiChar(gcode, d, x_cursor, ascii_y_off, ascii_scale, power, feed_rate);
                 x_cursor += cw * ascii_scale;
             } else {
-                GenHanziChar(gcode, d, x_cursor, y_start, hanzi_scale, power, feed_rate);
+                GenHanziChar(gcode, d, x_cursor, hanzi_y_base, hanzi_scale, power, feed_rate);
                 x_cursor += cw * hanzi_scale;
             }
         }
@@ -240,20 +263,25 @@ public:
             "  \"数字XXX\" → text=\"XXX\" (如\"雕刻数字123\"→text=\"123\")\n"
             "  \"符号XXX\" → text=对应符号 (如\"雕刻符号at\"→text=\"@\")\n"
             "  \"雕刻一个5mm的汉字我爱你\" → size=5, text=\"我爱你\"\n"
-            "用户指定雕刻位置时, 提取 x/y 坐标:\n"
-            "  \"雕刻xy坐标分别为10mm和10mm的你好\" → x=10, y=10, text=\"你好\"\n"
-            "  \"在x=10,y=5位置雕刻汉字中国\" → x=10, y=5, text=\"中国\"\n"
-            "  \"雕刻x坐标5,y坐标10的汉字你是\" → x=5, y=10, text=\"你是\"\n"
+            "用户指定雕刻位置时, 提取 x/y 坐标作为锚点:\n"
+            "  锚点是文字的定位参考点, 系统会自动选择文字从锚点延伸的方向, 确保不超出 42x42mm 范围。\n"
+            "  四角坐标(可以使用近似值):\n"
+            "    左下角(原点) → x=0, y=0      右下角 → x=42, y=0\n"
+            "    左上角 → x=0, y=42            右上角 → x=42, y=42\n"
+            "    中间 → x=21, y=21(文字居中于锚点附近)\n"
+            "  如\"在左上角雕刻汉字一骑绝尘\" → x=0, y=42\n"
+            "  如\"在右下角雕刻汉字大吉大利\" → x=42, y=0\n"
+            "  如\"在中间雕刻汉字福\" → x=21, y=21\n"
             "参数:\n"
             "  `text` 要雕刻的文字   `size` 字高mm(1-42)默认5   `power` 激光功率0-1000默认1000\n"
-            "  `x` `y` 起始位置mm默认(0,0)  雕刻速度固定400mm/min\n"
-            "雕刻范围 42x42mm, 超出则返回错误。没有特定要求，不要擅自重复雕刻。结束后等待雕刻完成,不要回复其他无关内容",
+            "  `x` `y` 锚点坐标mm默认(0,0)  雕刻速度固定400mm/min\n"
+            "雕刻范围 42x42mm, 超出则返回错误。原点的位置是左下角，(0,42)是左上角，(42,0)是右下角，(42,42)是右上角。没有特定要求，不要擅自重复雕刻。结束后等待雕刻完成,不要回复其他无关内容",
             PropertyList({
                 Property("text", kPropertyTypeString),
                 Property("size", kPropertyTypeInteger, 5, 1, 42),
                 Property("power", kPropertyTypeInteger, 1000, 0, 1000),
-                Property("x", kPropertyTypeInteger, 0, 0, 40),
-                Property("y", kPropertyTypeInteger, 0, 0, 40),
+                Property("x", kPropertyTypeInteger, 0, 0, 42),
+                Property("y", kPropertyTypeInteger, 0, 0, 42),
             }),
             [this](const PropertyList& properties) -> ReturnValue {
                 std::string text = properties["text"].value<std::string>();
@@ -264,9 +292,9 @@ public:
                 float y_start     = static_cast<float>(properties["y"].value<int>());
 
                 if (text.empty()) throw std::runtime_error("text 不能为空");
-                if (x_start >= ENGRAVING_AREA_WIDTH)
+                if (x_start > ENGRAVING_AREA_WIDTH)
                     throw std::runtime_error("起始 X 坐标超出雕刻范围(0~42mm)");
-                if (y_start >= ENGRAVING_AREA_HEIGHT)
+                if (y_start > ENGRAVING_AREA_HEIGHT)
                     throw std::runtime_error("起始 Y 坐标超出雕刻范围(0~42mm)");
 
                 std::string gcode = GenerateGcode(text, size_mm, x_start, y_start, power, feed_rate);
@@ -284,7 +312,7 @@ public:
                 };
                 auto* ctx = new Ctx{std::move(gcode), std::move(text), line_count};
 
-                xTaskCreate([](void* arg) {
+                xTaskCreatePinnedToCore([](void* arg) {
                     auto* ctx = static_cast<Ctx*>(arg);
                     try {
                         MotionController::GlobalInit(106.666f, 106.666f, 700.0f, 800.0f, 0.02f, 42.0f);
@@ -302,7 +330,7 @@ public:
                     }
                     delete ctx;
                     vTaskDelete(nullptr);
-                }, "engrave", 8192, ctx, 5, nullptr);
+                }, "engrave", 8192, ctx, 5, nullptr, 1);
 
                 ESP_LOGI("KanjiVG", "Engrave task started, %d lines", line_count);
 
